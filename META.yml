@@ -1,25 +1,29 @@
 ---
-name: Apache2-AuthenNTLM-Cookie
-version: 0.01
+abstract: 'Store NTLM identity in a cookie'
 author:
   - 'Laurent Dami <la_____.da__@etat.ge.ch>'
-abstract: Store NTLM identity in a cookie
+build_requires:
+  Test::More: 0
+configure_requires:
+  Module::Build: 0.36
+generated_by: 'Module::Build version 0.3607'
 license: perl
-resources:
-  license: http://dev.perl.org/licenses/
+meta-spec:
+  url: http://module-build.sourceforge.net/META-spec-v1.4.html
+  version: 1.4
+name: Apache2-AuthenNTLM-Cookie
+provides:
+  Apache2::AuthenNTLM::Cookie:
+    file: lib/Apache2/AuthenNTLM/Cookie.pm
+    version: 1.00
 requires:
   Apache2::AuthenNTLM: 0
   Apache2::Cookie: 0
   Apache2::Directive: 0
+  Apache2::Request: 0
   Apache2::RequestRec: 0
   Digest::SHA1: 0
-build_requires:
-  Test::More: 0
-provides:
-  Apache2::AuthenNTLM::Cookie:
-    file: lib/Apache2/AuthenNTLM/Cookie.pm
-    version: 0.01
-generated_by: Module::Build version 0.2808
-meta-spec:
-  url: http://module-build.sourceforge.net/META-spec-v1.2.html
-  version: 1.2
+  MIME::Base64: 0
+resources:
+  license: http://dev.perl.org/licenses/
+version: 1.00
