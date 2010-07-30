@@ -15,7 +15,7 @@ name: Apache2-AuthenNTLM-Cookie
 provides:
   Apache2::AuthenNTLM::Cookie:
     file: lib/Apache2/AuthenNTLM/Cookie.pm
-    version: 1.00
+    version: 1.01
 requires:
   Apache2::AuthenNTLM: 0
   Apache2::Cookie: 0
@@ -26,4 +26,4 @@ requires:
   MIME::Base64: 0
 resources:
   license: http://dev.perl.org/licenses/
-version: 1.00
+version: 1.01

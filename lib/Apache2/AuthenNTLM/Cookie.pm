@@ -15,7 +15,7 @@ use MIME::Base64               ();
 
 use base 'Apache2::AuthenNTLM';
 
-our $VERSION = '1.00';
+our $VERSION = '1.01';
 
 # constants from NTLM protocol
 use constant NEGOTIATE_UNICODE     => 0x00000001;
@@ -135,9 +135,16 @@ sub default_secret {
 
 sub has_empty_body {
   my $self = shift;
-  my $apr_req        = Apache2::Request->new($self->{request});
-  my $body_apr_table = $apr_req->body;
-  return !$body_apr_table || !scalar(keys %$body_apr_table);
+
+  my $content_length = $self->{request}->headers_in->{"Content-Length"};
+  if (defined $content_length && !$content_length) {
+    return 1;
+  }
+  else {
+    my $apr_req        = Apache2::Request->new($self->{request});
+    my $body_apr_table = $apr_req->body;
+    return !$body_apr_table || !scalar(keys %$body_apr_table);
+  }
 }
 
 
