@@ -13,9 +13,9 @@ use Apache2::Const -compile => qw(OK HTTP_UNAUTHORIZED) ;
 use Digest::SHA1               qw(sha1_hex);
 use MIME::Base64               ();
 
-use base 'Apache2::AuthenNTLM';
+use Apache2::AuthenNTLM;
 
-our $VERSION = '1.01';
+our $VERSION = '1.02';
 
 # constants from NTLM protocol
 use constant NEGOTIATE_UNICODE     => 0x00000001;
@@ -24,6 +24,10 @@ use constant TARGET_TYPE_DOMAIN    => 0x00010000;
 use constant NEGOTIATE_TARGET_INFO => 0x00800000;
 use constant NTLM_SIGNATURE        => "NTLMSSP";
 use constant NTLM_FORMAT           => "a8 V a8 V a8 a8 a8";
+
+# named fields corresponding to format above
+my @NTLM_FIELDS = qw/signature msg_type target_name flags 
+                     challenge context target_info/;
 
 # cookie format: digest(40); time_created(12); username
 use constant COOKIE_FORMAT         => "A40 A12 A*"; 
@@ -49,34 +53,45 @@ sub handler : method  {
 
   # if cookie is present and valid
   if ($has_valid_cookie) {
+    $result = Apache2::Const::OK;
 
-    # if MSIE "optimization" is activated, i.e. if this is a POST with an NTLM
-    # type1 message and without body, then we must fake a Auth denial with an
-    # NTLM type2 message
-    my $must_fake_NTLM_msg2 = $r->method eq 'POST' && $self->has_empty_body
-                                                   && $self->is_NTLM_msg1;
+    # if MSIE "optimization" is activated, i.e. if this is a POST with an
+    # NTLM type1 message and without body ... 
+    if ($r->method eq 'POST' && $self->has_empty_body && $self->is_NTLM_msg1) {
 
-    # either respond with fake NTLM msg2, or authentication succeeded
-    $result = $must_fake_NTLM_msg2 ? $self->deny_with_NTLM_msg2
-                                   : Apache2::Const::OK;
+      # ... then we must fake a type2 msg so that MSIE will post again
+      $r->log->debug("AuthenNTLM::Cookie: creating fake type2 msg");
+      $self->add_auth_header($self->fake_NTLM_msg2);
+      $result = Apache2::Const::HTTP_UNAUTHORIZED;
+    }
   }
 
   # otherwise (if cookie is absent or invalid)
   else {
-    # invoke parent class to go through the NTLM handshake
-    my $msg = $cookie ? "cookie invalidated" : "no cookie";
-    $r->log->debug("AuthenNTLM::Cookie: $msg, calling SUPER (NTLM handler)");
-    $result = $class->SUPER::handler($r); # if success, will set $r->user
 
-    # create the cookie if NTLM succeeded
-    $self->set_cookie if $result == Apache2::Const::OK;
+    # if no NTLM message, directly ask for authentication (avoid calling
+    # Apache2::AuthenNTLM because it pollutes the error log)
+    if (!$self->get_NTLM_msg && $self->is_ntlmauthoritative) {
+      $self->ask_for_authentication;
+      $result = Apache2::Const::HTTP_UNAUTHORIZED;
+    }
+
+    # else invoke Apache2::AuthenNTLM to go through the NTLM handshake    
+    else {
+      my $msg = $cookie ? "cookie invalidated" : "no cookie";
+      $r->log->debug("AuthenNTLM::Cookie: $msg, calling Apache2::AuthenNTLM");
+      $result = Apache2::AuthenNTLM->handler($r); # will set $r->user
+
+      # create the cookie if NTLM succeeded
+      $self->set_cookie if $result == Apache2::Const::OK;
+    }
   }
 
   return $result;
 }
 
 
-sub validate_cookie : method {
+sub validate_cookie {
   my ($self, $cookie_val) = @_;
 
   # unpack cookie information
@@ -97,7 +112,7 @@ sub validate_cookie : method {
 }
 
 
-sub set_cookie : method {
+sub set_cookie {
   my ($self) = @_;
 
   # prepare a new cookie from current time and current user
@@ -148,43 +163,75 @@ sub has_empty_body {
 }
 
 
-sub is_NTLM_msg1 {
-  my $self = shift;
-  my $auth = $self->{request}->headers_in->{Authorization};
-  my $is_msg1 = 0;
-  if ($auth && $auth =~ s/^NTLM//) {
-    my $ntlm_msg = MIME::Base64::decode($auth);
-    my ($signature, $msg_type, $target_name,
-        $flags, $challenge, $context, $target_info) 
-      = unpack NTLM_FORMAT, $ntlm_msg;
-    $is_msg1 = $msg_type == 1;
+sub get_NTLM_msg {
+  my $self         = shift;
+  my $r            = $self->{request};
+  my $header_field = $r->proxyreq ? 'Proxy-Authorization' : 'Authorization';
+  my $auth_header  = $r->headers_in->{$header_field};
+
+  if ($auth_header && $auth_header =~ s/^NTLM//) {
+    my $packed = MIME::Base64::decode($auth_header);
+    my %NTLM_msg;
+    @NTLM_msg{@NTLM_FIELDS} = unpack NTLM_FORMAT, $packed;
+    return \%NTLM_msg;
   }
 
-  return $is_msg1;
+  return;
 }
 
 
-sub deny_with_NTLM_msg2 {
+sub is_NTLM_msg1 {
+  my $self = shift;
+  my $NTLM_msg = $self->get_NTLM_msg;
+  return $NTLM_msg && $NTLM_msg->{msg_type} == 1;
+}
+
+
+sub fake_NTLM_msg2 {
   my $self = shift;
 
-  my $msg_type    = 2;
-  my $target_name = "";
-  my $flags       = NEGOTIATE_UNICODE  | NEGOTIATE_NTLM |
-                    TARGET_TYPE_DOMAIN | NEGOTIATE_TARGET_INFO;
-  my $challenge   = "";
-  my $context     = "";
-  my $target_info = "";
+  my %NTLM_msg = (
+    signature => NTLM_SIGNATURE,
+    msg_type  => 2,
+    flags     => NEGOTIATE_UNICODE  | NEGOTIATE_NTLM |
+                 TARGET_TYPE_DOMAIN | NEGOTIATE_TARGET_INFO,
+   );
 
-  my $msg    = pack NTLM_FORMAT, NTLM_SIGNATURE, $msg_type, $target_name,
-                                 $flags, $challenge, $context, $target_info;
-  my $header = "NTLM " . MIME::Base64::encode($msg, '');
+  no warnings 'uninitialized';
+  my $packed = pack NTLM_FORMAT, @NTLM_msg{@NTLM_FIELDS};
 
-  my $r   = $self->{request};
-  my $hdr = $r->err_headers_out;
-  $hdr->add($r->proxyreq ? 'Proxy-Authenticate' : 'WWW-Authenticate', $header);
-  $r->log->debug("AuthenNTLM::Cookie: creating fake type2 msg [$header]");
+  return "NTLM " . MIME::Base64::encode($packed, '');
+}
 
-  return Apache2::Const::HTTP_UNAUTHORIZED;
+
+sub ask_for_authentication {
+  my $self = shift;
+
+  my $r      = $self->{request};
+  my $auth_type = $r->auth_type || 'NTLM,Basic';
+
+  $self->add_auth_header('NTLM') 
+    if $auth_type =~ /\bNTLM\b/i;
+  $self->add_auth_header(sprintf 'Basic realm="%s"', $r -> auth_name || '')
+    if $auth_type =~ /\bBasic\b/i;
+}
+
+
+sub add_auth_header {
+  my ($self, $header) = @_;
+
+  my $r           = $self->{request};
+  my $header_name = $r->proxyreq ? 'Proxy-Authenticate' : 'WWW-Authenticate';
+  $r->err_headers_out->add($header_name => $header);
+}
+
+
+sub is_ntlmauthoritative {
+  my $self = shift;
+
+  my $r      = $self->{request};
+  my $config = $r->dir_config('ntlmauthoritative') || 'on';
+  return $config =~ /^(on|1)$/i;
 }
 
 
